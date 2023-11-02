@@ -4,15 +4,18 @@
   "description": "",
   "main": "index.ts",
   "scripts": {
-    "build": "gulp"
+    "build": "gulp",
+    "watch": "gulp watch"
   },
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@types/node": "^20.8.10",
     "gulp": "^4.0.2",
     "gulp-clean": "^0.4.0",
     "gulp-copy": "^4.0.1",
     "gulp-typescript": "^6.0.0-alpha.1",
+    "obsidian": "^1.4.11",
     "tsc": "^2.0.4"
   }
 }
