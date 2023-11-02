@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-reusability",
+	"name": "Reusability",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "",
+	"author": "Noah Kamara",
+	"authorUrl": "https://github.com/noahkamara",
+	"isDesktopOnly": false
+}
