@@ -1,5 +1,18 @@
 import { link } from "fs"
-import { App, Component, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownRenderer, Plugin, TFile, Vault, getLinkpath, parseLinktext, resolveSubpath } from "obsidian"
+import { App, Component, MarkdownPostProcessor, MarkdownPostProcessorContext, MarkdownRenderChild, MarkdownRenderer, Plugin, Reference, TFile, Vault, getLinkpath, parseFrontMatterEntry, parseFrontMatterStringArray, parseLinktext, resolveSubpath } from "obsidian"
+
+type Processor = {
+    block?: string[]
+    inline?: string[]
+}
+
+export const supportedPlugins = {
+    "dataview": {
+        block: [
+            "dataviewInline"
+        ]
+    }
+}
 
 const logger = {
     debug: (message?: string, ...optionalParams: any[]) => {
@@ -11,29 +24,72 @@ const logger = {
 }
 
 type ReferenceOptions = {
-    block?: string
+    source: string,
+    resolveInSource: boolean
 }
 
+type ParsingFN = (el: HTMLElement, component: Component | MarkdownPostProcessorContext, sourcePath: string) => Promise<void>
+
+class ParsingPlugin {
+    public id: string
+    plugin: Plugin
+    fn: string
+
+
+    constructor(id: string, plugin: Plugin, fn: string) {
+        this.id = id
+        this.plugin = plugin
+        this.fn = fn
+    }
+
+    async render(
+        el: HTMLElement,
+        component: Component | MarkdownPostProcessorContext,
+        sourcePath: string
+    ): Promise<void> {
+        // @ts-ignore
+        await this.plugin[this.fn](el, component, sourcePath)
+    }
+}
+
+// export function buildPluginStaticResourceSrc(plug: Plugin_2, assetPath: string) {
+//     return plug.app.vault.adapter.getResourcePath(pathJoin(plug.app.vault.configDir, "plugins", plug.manifest.id, assetPath))
+//   }
+
+
 export default class Reusability extends Plugin {
+    plugins: ParsingPlugin[] = [];
+    processor!: MarkdownPostProcessor;
+
+    private loadPlugins() {
+        // @ts-ignore
+        const plugins = this.app.plugins.plugins
+
+        logger.debug("plugins", Object.keys(supportedPlugins))
+
+        for (const [pluginID, plugin] of Object.entries(plugins)) {
+
+            if (Object.keys(supportedPlugins).contains(pluginID)) {
+                logger.debug(`found plugin: ${pluginID}`)
+                this.plugins.push(new ParsingPlugin(pluginID, plugins[pluginID], "dataviewInline"))
+            }
+        }
+
+        // @ts-ignore
+        logger.info(`found ${this.plugins.length} supported plugins out of ${Object.keys(plugins).length}`)
+    }
+
     async onload() {
         logger.info("loading")
-        this.registerProcessor()
 
         this.app.workspace.onLayoutReady(() => {
-            const id = "dataview"
+            logger.info("loading plugins")
+            this.loadPlugins()
 
-            // @ts-ignore
-            const plugins = this.app.plugins.plugins
-
-            logger.info("available", plugins)
-
-            if (!Object.keys(plugins).contains(id)) {
-                logger.info("dataview is missing")
-                return
-            }
-
-            const dv = plugins[id]
-            logger.info("dataview found", dv)
+            logger.info("register codeblock processor")
+            this.processor = this.registerMarkdownCodeBlockProcessor("reusable", async (src, el, ctx) => {
+                await this.processCodeBlock(src, el, ctx)
+            });
         });
     }
 
@@ -41,68 +97,81 @@ export default class Reusability extends Plugin {
         logger.info("unloading")
     }
 
-    /** Register a markdown post processor with the given priority. */
-    public registerPriorityMarkdownPostProcessor(
-        priority: number,
-        processor: (el: HTMLElement, ctx: MarkdownPostProcessorContext) => Promise<void>
-    ) {
-        let registered = this.registerMarkdownPostProcessor(processor);
-        registered.sortOrder = priority;
-    }
 
-    registerProcessor(): void {
-        logger.info("register codeblock processor")
 
-        this.registerMarkdownCodeBlockProcessor("reusable", async (source, el, ctx) => {
-            logger.info("processing block")
-            logger.info("Element", el)
-            logger.info("Element", ctx)
-
-            const options: ReferenceOptions = source
-                .split("\n")
+    async processCodeBlock(source: string, el: HTMLElement, ctx: MarkdownPostProcessorContext) {
+        const processCodeBlockOptions = (optionString: string): ReferenceOptions | null => {
+            const raw: Map<string, string> = optionString.split("\n")
                 .filter((row) => row.length > 0)
-                .reduce((partialResult, row, currentIndex, array) => {
+                .reduce((partialResult: Map<string, string>, row, currentIndex, array) => {
                     let key_val = row.split(':')
                     const key = key_val[0].trim()
                     const val = key_val[1].trim()
 
-                    return {
-                        ...partialResult,
-                        [key]: val
-                    }
-                }, {})
+                    partialResult.set(key, val)
+                    return partialResult
+                }, new Map<string, string>()
+                );
 
 
-            logger.info("Options", options)
 
-            // Convert Text to Link
-            const link2reusable = parseLinktext(options.block!)
-            logger.info("link", link2reusable, getLinkpath(options.block!))
 
+            const source = raw.get("source")
+
+            if (source) {
+                return {
+                    source: source,
+                    resolveInSource: raw.get("resolveInSource")?.toLowerCase() == "true"
+                }
+            } else { return null }
+        }
+
+
+        logger.info("processing block", ctx.sourcePath)
+
+        // Parse Block Options
+        let options = processCodeBlockOptions(source);
+
+        if (!options) {
+            logger.info("failed to parse options")
+            return
+        }
+
+        logger.debug("Options", options)
+
+        // Read Content 
+        let content!: string
+        let contentPath!: string
+
+        if (options.source.startsWith("$")) {
+            logger.debug("source is reference")
+            content = "ERROR"
+            contentPath = ctx.sourcePath
+        } else {
+            logger.debug("source is file")
+            const link2reusable = parseLinktext(options.source)
+            
             // Retrieve linked file
-            const file = this.app.vault.getMarkdownFiles()
+            const file = this.app.vault
+                .getMarkdownFiles()
                 .filter(f => f.path == link2reusable.path + ".md")[0]
-            logger.info("file", file)
 
-            // Read Content 
-            el.createSpan({ text: "Heading 1" })
-            const content = await this.app.vault.read(file)
+            logger.debug("found file", file.path)
+            contentPath = file.path
 
-            logger.info("content", content)
+            logger.debug(contentPath)
+            content = await this.app.vault.cachedRead(file)
+        }
 
-            const referenceContainer = new Component()
+        // Render Content
+        const referenceContainer = new Component()
+        await MarkdownRenderer.render(this.app, content, el, ctx.sourcePath, referenceContainer)
 
+        // Set SourcePath to snippet source if `resolveInSource` is true
+        const pluginSourcePath = options.resolveInSource ? contentPath : ctx.sourcePath
 
-            await MarkdownRenderer.render(this.app, content, el, ctx.sourcePath, referenceContainer)
-            // for (let i = 0; i < rows.length; i++) {
-            //   const cols = rows[i].split(",");
-
-            //   const row = body.createEl("tr");
-
-            //   for (let j = 0; j < cols.length; j++) {
-            //     row.createEl("td", { text: cols[j] });
-            //   }
-            // }
-        });
+        // Run Plugins
+        this.plugins.forEach(p => p.render(el, ctx, pluginSourcePath))
     }
 }
+
